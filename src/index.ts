@@ -22,7 +22,15 @@ app.get('/health', (_request, response) => {
  */
 app.post('/webhooks/linq', express.raw({ type: '*/*' }), async (request, response) => {
   const rawBody = request.body.toString('utf8');
-  let event: { type?: string; event?: string; data?: unknown };
+  // `event_type` and `event_id` are what the 2026-02-03 envelope actually uses; the
+  // others are kept only so an older payload shape still routes somewhere.
+  let event: {
+    event_type?: string;
+    event_id?: string;
+    type?: string;
+    event?: string;
+    data?: unknown;
+  };
 
   if (config.linq.webhookSecret) {
     try {
@@ -46,7 +54,7 @@ app.post('/webhooks/linq', express.raw({ type: '*/*' }), async (request, respons
     }
   }
 
-  const eventId = request.headers['webhook-id'];
+  const eventId = event.event_id ?? request.headers['webhook-id'];
   if (typeof eventId === 'string' && !claimWebhookEvent(eventId, 'linq')) {
     // Delivery is at-least-once, so a duplicate is expected, not an error.
     response.status(200).send('duplicate');
@@ -57,7 +65,16 @@ app.post('/webhooks/linq', express.raw({ type: '*/*' }), async (request, respons
   // round-trip through dd-cli can take longer than that.
   response.status(200).send('ok');
 
-  const eventType = event.type ?? event.event ?? '';
+  const eventType = event.event_type ?? event.type ?? event.event ?? '';
+
+  // Logged on every inbound: an unrecognised event type is otherwise indistinguishable
+  // from no delivery at all, which hid a routing bug behind a silently healthy server.
+  if (!eventType) {
+    console.warn(`[linq] event with no recognisable type; keys: ${Object.keys(event).join(', ')}`);
+  } else {
+    console.log(`[linq] ${eventType}`);
+  }
+
   try {
     await handleLinqEvent(eventType, event.data ?? event);
   } catch (error) {

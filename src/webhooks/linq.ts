@@ -58,6 +58,9 @@ export async function handleLinqEvent(eventType: string, data: unknown): Promise
       return;
     default:
       // Chat and message lifecycle events still carry health, which is worth caching.
+      // Anything unrecognised lands here and does nothing else, so it is worth saying
+      // so out loud rather than looking like a successfully handled event.
+      console.log(`[linq] no handler for ${eventType || '(missing type)'} — caching health only`);
       cacheHealthFromEvent(data);
   }
 }
