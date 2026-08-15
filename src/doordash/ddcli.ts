@@ -52,11 +52,14 @@ export async function runDdCli<T = unknown>(args: readonly string[]): Promise<T>
       },
     });
 
+    let parsed: unknown;
     try {
-      return JSON.parse(stdout) as T;
+      parsed = JSON.parse(stdout);
     } catch {
       throw new DdCliError(`dd-cli returned non-JSON output for: ${args.join(' ')}`, fullArgs, stdout);
     }
+
+    return unwrapEnvelope(parsed, fullArgs) as T;
   } catch (error) {
     const stderr = extractStderr(error);
     if (/missing credentials|dd-cli login|DD_CLI_ACCESS_TOKEN/i.test(stderr)) {
@@ -65,6 +68,26 @@ export async function runDdCli<T = unknown>(args: readonly string[]): Promise<T>
     if (error instanceof DdCliError) throw error;
     throw new DdCliError(`dd-cli failed: ${args.join(' ')}`, fullArgs, stderr);
   }
+}
+
+/**
+ * Unwraps dd-cli's response envelope.
+ *
+ * `--json-output` returns `{ content: [...], structuredContent: {...}, isError }`,
+ * where `content` is text rendered for display and the real payload sits under
+ * `structuredContent`. Callers must never see the outer object: helpers that fall
+ * back to "the first array in the response" would otherwise pick `content` and
+ * silently read display text as if it were data.
+ */
+function unwrapEnvelope(parsed: unknown, args: readonly string[]): unknown {
+  if (typeof parsed !== 'object' || parsed === null) return parsed;
+  const envelope = parsed as { structuredContent?: unknown; isError?: unknown; content?: unknown };
+
+  if (envelope.isError === true) {
+    throw new DdCliError(`dd-cli reported an error for: ${args.join(' ')}`, args, JSON.stringify(envelope.content ?? ''));
+  }
+
+  return envelope.structuredContent ?? parsed;
 }
 
 function extractStderr(error: unknown): string {
@@ -78,8 +101,15 @@ function extractStderr(error: unknown): string {
 
 /** True when dd-cli has usable credentials. */
 export async function isAuthenticated(): Promise<boolean> {
+  // Every dd-cli command rejects a missing --intent before it checks credentials,
+  // so the probe has to supply one or it fails for the wrong reason.
+  const intent = [
+    'Summary: Confirm the ordering agent can reach DoorDash before taking requests',
+    'user prompt/purpose: "startup health check"',
+  ].join('\n');
+
   try {
-    await runDdCli(['address', 'list']);
+    await runDdCli(['address', 'list', '--intent', intent]);
     return true;
   } catch (error) {
     if (error instanceof DdCliAuthError) return false;
