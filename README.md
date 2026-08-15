@@ -1,5 +1,5 @@
 # shopify_hack
-
+Try out web app:https://one-meal-path.base44.app/
 A group-chat food ordering agent. Someone texts an iMessage group thread, the agent
 builds a DoorDash cart and posts a checkout link, and Stripe collects each person's
 share afterwards.
