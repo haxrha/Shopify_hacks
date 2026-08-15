@@ -5,7 +5,7 @@ import { claimWebhookEvent } from './db.ts';
 import { refreshLineReputations } from './linq/health.ts';
 import { handleLinqEvent } from './webhooks/linq.ts';
 import { handleStripeEvent } from './webhooks/stripe.ts';
-import { stripe } from './split/stripe.ts';
+import { getStripe, isStripeConfigured } from './split/stripe.ts';
 import { isAuthenticated } from './doordash/ddcli.ts';
 
 const app = express();
@@ -21,15 +21,29 @@ app.get('/health', (_request, response) => {
  * the exact bytes, and parsing then re-serializing would change them.
  */
 app.post('/webhooks/linq', express.raw({ type: '*/*' }), async (request, response) => {
+  const rawBody = request.body.toString('utf8');
   let event: { type?: string; event?: string; data?: unknown };
-  try {
-    event = linq.webhooks.unwrap(request.body.toString('utf8'), {
-      headers: request.headers as Record<string, string>,
-    }) as typeof event;
-  } catch (error) {
-    console.warn('[linq] rejected webhook with an invalid signature', error);
-    response.status(400).send('invalid signature');
-    return;
+
+  if (config.linq.webhookSecret) {
+    try {
+      event = linq.webhooks.unwrap(rawBody, {
+        headers: request.headers as Record<string, string>,
+      }) as typeof event;
+    } catch (error) {
+      console.warn('[linq] rejected webhook with an invalid signature', error);
+      response.status(400).send('invalid signature');
+      return;
+    }
+  } else {
+    // Unverified path for `linq webhooks listen --forward-to`, which relays events
+    // from localhost and may not carry signature headers. Only safe because the
+    // listener is the sole thing that can reach this port.
+    try {
+      event = JSON.parse(rawBody) as typeof event;
+    } catch {
+      response.status(400).send('invalid json');
+      return;
+    }
   }
 
   const eventId = request.headers['webhook-id'];
@@ -52,6 +66,12 @@ app.post('/webhooks/linq', express.raw({ type: '*/*' }), async (request, respons
 });
 
 app.post('/webhooks/stripe', express.raw({ type: '*/*' }), async (request, response) => {
+  const stripeConfig = config.stripe;
+  if (!stripeConfig) {
+    response.status(503).send('stripe not configured');
+    return;
+  }
+
   const signature = request.headers['stripe-signature'];
   if (typeof signature !== 'string') {
     response.status(400).send('missing signature');
@@ -60,7 +80,7 @@ app.post('/webhooks/stripe', express.raw({ type: '*/*' }), async (request, respo
 
   let event;
   try {
-    event = stripe.webhooks.constructEvent(request.body, signature, config.stripe.webhookSecret);
+    event = getStripe().webhooks.constructEvent(request.body, signature, stripeConfig.webhookSecret);
   } catch (error) {
     console.warn('[stripe] rejected webhook with an invalid signature', error);
     response.status(400).send('invalid signature');
@@ -101,10 +121,20 @@ async function start(): Promise<void> {
     console.warn('[startup] dd-cli is not signed in — ordering will fail until `dd-cli login` is run');
   }
 
+  if (!config.linq.webhookSecret) {
+    console.warn(
+      '[startup] LINQ_WEBHOOK_SECRET is unset — inbound webhooks are NOT signature-verified.\n' +
+        '          Fine for `linq webhooks listen --forward-to` on localhost. Do not expose this port.',
+    );
+  }
+  if (!isStripeConfigured()) {
+    console.warn('[startup] Stripe is not configured — bill splitting is disabled');
+  }
+
   app.listen(config.port, () => {
     console.log(`[startup] listening on :${config.port}`);
-    console.log(`[startup] Linq webhook   → ${config.publicBaseUrl}/webhooks/linq`);
-    console.log(`[startup] Stripe webhook → ${config.publicBaseUrl}/webhooks/stripe`);
+    console.log(`[startup] forward events with:`);
+    console.log(`          linq webhooks listen --forward-to http://localhost:${config.port}/webhooks/linq`);
   });
 }
 

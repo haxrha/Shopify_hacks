@@ -8,7 +8,12 @@ import { recordInbound } from '../linq/volume.ts';
 import { parseIntent } from '../agent/intent.ts';
 import { buildOrderDraft } from '../doordash/order.ts';
 import { DdCliAuthError } from '../doordash/ddcli.ts';
-import { createSplitCharges, formatCents, outstandingShares } from '../split/stripe.ts';
+import {
+  createSplitCharges,
+  formatCents,
+  isStripeConfigured,
+  outstandingShares,
+} from '../split/stripe.ts';
 import {
   clearOptOut,
   db,
@@ -259,6 +264,13 @@ async function handleOrder(
 }
 
 async function handleSplit(chatId: string, sender: string, isGroup: boolean): Promise<void> {
+  if (!isStripeConfigured()) {
+    await reply(chatId, sender, [
+      text("I can't split bills yet — payments aren't set up on my end. Everything else still works."),
+    ]);
+    return;
+  }
+
   const order = db
     .prepare("SELECT * FROM orders WHERE chat_id = ? AND status = 'draft' ORDER BY created_at DESC LIMIT 1")
     .get(chatId) as { id: string; store_name: string | null; total_cents: number | null } | undefined;

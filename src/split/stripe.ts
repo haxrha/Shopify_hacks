@@ -3,7 +3,24 @@ import Stripe from 'stripe';
 import { config } from '../config.ts';
 import { db, now } from '../db.ts';
 
-export const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2026-07-29.dahlia' });
+/**
+ * Stripe is optional. Ordering works without it; only bill splitting needs it, so
+ * the client is built lazily and callers check `isStripeConfigured` first rather
+ * than the whole app failing to boot over an unset key.
+ */
+let client: Stripe | undefined;
+
+export function isStripeConfigured(): boolean {
+  return config.stripe !== undefined;
+}
+
+export function getStripe(): Stripe {
+  if (!config.stripe) {
+    throw new Error('Stripe is not configured — set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET');
+  }
+  client ??= new Stripe(config.stripe.secretKey, { apiVersion: '2026-07-29.dahlia' });
+  return client;
+}
 
 export interface Share {
   id: string;
@@ -56,7 +73,7 @@ export async function createSplitCharges(
     if (amountCents <= 0) continue;
 
     const shareId = randomUUID();
-    const session = await stripe.checkout.sessions.create(
+    const session = await getStripe().checkout.sessions.create(
       {
         mode: 'payment',
         line_items: [

@@ -10,6 +10,12 @@ function optional(name: string, fallback: string): string {
   return process.env[name] ?? fallback;
 }
 
+/** Returns undefined for both unset and empty-string values, so a blank line in .env reads as "not configured". */
+function maybe(name: string): string | undefined {
+  const value = process.env[name];
+  return value && value.trim().length > 0 ? value : undefined;
+}
+
 function num(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -23,7 +29,15 @@ export const config = {
 
   linq: {
     apiKey: required('LINQ_API_KEY'),
-    webhookSecret: required('LINQ_WEBHOOK_SECRET'),
+    /** Our own Linq Number, used to recognise our own handle in chat participants. */
+    phoneNumber: maybe('LINQ_PHONE_NUMBER'),
+    /**
+     * Absent when events arrive via `linq webhooks listen --forward-to`, which relays
+     * them locally and may not reproduce the Standard Webhooks signature headers.
+     * When unset the webhook route runs unverified — acceptable on localhost, never
+     * for a publicly reachable deployment.
+     */
+    webhookSecret: maybe('LINQ_WEBHOOK_SECRET'),
     /**
      * Pinned so payload shape can't shift under us. The v2 message payload is what
      * `src/webhooks/linq.ts` reads: `direction`, `sender_handle`, `chat.health_status`.
@@ -31,10 +45,12 @@ export const config = {
     webhookVersion: optional('LINQ_WEBHOOK_VERSION', '2026-02-03'),
   },
 
-  stripe: {
-    secretKey: required('STRIPE_SECRET_KEY'),
-    webhookSecret: required('STRIPE_WEBHOOK_SECRET'),
-  },
+  /** Undefined until both keys are set; bill splitting stays disabled until then. */
+  stripe: (() => {
+    const secretKey = maybe('STRIPE_SECRET_KEY');
+    const webhookSecret = maybe('STRIPE_WEBHOOK_SECRET');
+    return secretKey && webhookSecret ? { secretKey, webhookSecret } : undefined;
+  })(),
 
   ddCli: {
     binary: optional('DD_CLI_BINARY', 'dd-cli'),
